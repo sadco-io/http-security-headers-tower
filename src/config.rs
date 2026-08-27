@@ -7,6 +7,7 @@ use crate::policy::*;
 
 /// Canonical header names, so the Tower and Actix paths cannot drift apart.
 pub(crate) const CONTENT_SECURITY_POLICY: &str = "content-security-policy";
+pub(crate) const CONTENT_SECURITY_POLICY_REPORT_ONLY: &str = "content-security-policy-report-only";
 pub(crate) const STRICT_TRANSPORT_SECURITY: &str = "strict-transport-security";
 pub(crate) const X_FRAME_OPTIONS: &str = "x-frame-options";
 pub(crate) const X_CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
@@ -43,6 +44,7 @@ pub(crate) const CROSS_ORIGIN_RESOURCE_POLICY: &str = "cross-origin-resource-pol
 #[derive(Debug, Clone)]
 pub struct SecurityHeaders {
     content_security_policy: Option<ContentSecurityPolicy>,
+    content_security_policy_report_only: Option<ContentSecurityPolicy>,
     strict_transport_security: Option<StrictTransportSecurity>,
     x_frame_options: Option<XFrameOptions>,
     x_content_type_options: bool,
@@ -68,6 +70,11 @@ impl SecurityHeaders {
     /// Returns the Content-Security-Policy if configured.
     pub fn content_security_policy(&self) -> Option<&ContentSecurityPolicy> {
         self.content_security_policy.as_ref()
+    }
+
+    /// Returns the report-only Content-Security-Policy if configured.
+    pub fn content_security_policy_report_only(&self) -> Option<&ContentSecurityPolicy> {
+        self.content_security_policy_report_only.as_ref()
     }
 
     /// Returns the Strict-Transport-Security policy if configured.
@@ -115,9 +122,13 @@ impl SecurityHeaders {
     /// When this is true the Tower middleware mints a [`Nonce`] for each request,
     /// places it in the request extensions, and renders the CSP with it.
     pub fn needs_nonce(&self) -> bool {
-        self.content_security_policy
-            .as_ref()
-            .is_some_and(ContentSecurityPolicy::requires_nonce)
+        [
+            self.content_security_policy.as_ref(),
+            self.content_security_policy_report_only.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(ContentSecurityPolicy::requires_nonce)
     }
 
     /// Returns the pre-rendered `(name, value)` pairs for every static header.
@@ -155,6 +166,53 @@ impl SecurityHeaders {
             .as_ref()
             .map(|csp| csp.to_header_value_with_nonce(nonce))
     }
+
+    /// Renders the report-only Content-Security-Policy for one request.
+    ///
+    /// Returns `None` if no report-only policy is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidCsp`] if the policy cannot be rendered. In practice
+    /// this cannot happen for a policy that survived `build()`.
+    pub fn csp_report_only_with_nonce(&self, nonce: &Nonce) -> Option<Result<String>> {
+        self.content_security_policy_report_only
+            .as_ref()
+            .map(|csp| csp.to_header_value_with_nonce(nonce))
+    }
+
+    /// Renders every header whose value depends on `nonce`.
+    ///
+    /// A policy that does not ask for a nonce is already in
+    /// [`header_pairs`](Self::header_pairs) and is not repeated here, so the two
+    /// together are the complete set for a request -- with no header appearing twice.
+    ///
+    /// Both CSP headers receive the *same* nonce, which is what makes a report-only
+    /// policy a usable dry run for the enforcing one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidCsp`] if a policy cannot be rendered. In practice this
+    /// cannot happen for a configuration that survived `build()`.
+    pub fn nonce_header_pairs(&self, nonce: &Nonce) -> Result<Vec<(&'static str, String)>> {
+        let mut pairs = Vec::new();
+
+        for (name, policy) in [
+            (CONTENT_SECURITY_POLICY, &self.content_security_policy),
+            (
+                CONTENT_SECURITY_POLICY_REPORT_ONLY,
+                &self.content_security_policy_report_only,
+            ),
+        ] {
+            if let Some(policy) = policy {
+                if policy.requires_nonce() {
+                    pairs.push((name, policy.to_header_value_with_nonce(nonce)?));
+                }
+            }
+        }
+
+        Ok(pairs)
+    }
 }
 
 /// Builder for SecurityHeaders.
@@ -163,6 +221,7 @@ impl SecurityHeaders {
 #[derive(Debug, Default, Clone)]
 pub struct SecurityHeadersBuilder {
     content_security_policy: Option<ContentSecurityPolicy>,
+    content_security_policy_report_only: Option<ContentSecurityPolicy>,
     strict_transport_security: Option<StrictTransportSecurity>,
     x_frame_options: Option<XFrameOptions>,
     x_content_type_options: bool,
@@ -192,6 +251,49 @@ impl SecurityHeadersBuilder {
     /// ```
     pub fn content_security_policy(mut self, policy: ContentSecurityPolicy) -> Self {
         self.content_security_policy = Some(policy);
+        self
+    }
+
+    /// Sets a report-only Content-Security-Policy.
+    ///
+    /// The browser evaluates this policy and reports violations, but does not
+    /// enforce it. That makes it the safe way to trial a tighter policy against
+    /// real traffic: set the strict one here, keep the permissive one enforcing,
+    /// and read the reports before swapping them over.
+    ///
+    /// It can be set alongside [`content_security_policy`], and both are sent. A
+    /// report-only policy with no reporting endpoint still surfaces violations in
+    /// the browser console; add [`report_uri`] or [`report_to`] to collect them.
+    ///
+    /// If either policy asks for a nonce, both are rendered with the *same*
+    /// per-request nonce, so a dry run behaves exactly like the eventual
+    /// enforcement.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use http_security_headers::{ContentSecurityPolicy, SecurityHeaders};
+    ///
+    /// let headers = SecurityHeaders::builder()
+    ///     // Enforced today.
+    ///     .content_security_policy(
+    ///         ContentSecurityPolicy::new().script_src(vec!["'self'", "'unsafe-inline'"]),
+    ///     )
+    ///     // What we intend to enforce once the reports are clean.
+    ///     .content_security_policy_report_only(
+    ///         ContentSecurityPolicy::new()
+    ///             .script_src(vec!["'self'"])
+    ///             .report_uri(vec!["/csp-report"]),
+    ///     )
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    ///
+    /// [`content_security_policy`]: Self::content_security_policy
+    /// [`report_uri`]: crate::ContentSecurityPolicy::report_uri
+    /// [`report_to`]: crate::ContentSecurityPolicy::report_to
+    pub fn content_security_policy_report_only(mut self, policy: ContentSecurityPolicy) -> Self {
+        self.content_security_policy_report_only = Some(policy);
         self
     }
 
@@ -362,6 +464,7 @@ impl SecurityHeadersBuilder {
     pub fn build(self) -> Result<SecurityHeaders> {
         // Validate that at least one header is configured
         if self.content_security_policy.is_none()
+            && self.content_security_policy_report_only.is_none()
             && self.strict_transport_security.is_none()
             && self.x_frame_options.is_none()
             && !self.x_content_type_options
@@ -384,6 +487,13 @@ impl SecurityHeadersBuilder {
             let value = csp.to_header_value()?;
             if !csp.requires_nonce() {
                 rendered.push((CONTENT_SECURITY_POLICY, value));
+            }
+        }
+
+        if let Some(csp) = &self.content_security_policy_report_only {
+            let value = csp.to_header_value()?;
+            if !csp.requires_nonce() {
+                rendered.push((CONTENT_SECURITY_POLICY_REPORT_ONLY, value));
             }
         }
 
@@ -421,6 +531,7 @@ impl SecurityHeadersBuilder {
 
         Ok(SecurityHeaders {
             content_security_policy: self.content_security_policy,
+            content_security_policy_report_only: self.content_security_policy_report_only,
             strict_transport_security: self.strict_transport_security,
             x_frame_options: self.x_frame_options,
             x_content_type_options: self.x_content_type_options,
@@ -577,6 +688,129 @@ mod tests {
         let pairs = headers.header_pairs();
         assert!(pairs.contains(&("x-frame-options", "DENY".to_string())));
         assert!(pairs.contains(&("x-content-type-options", "nosniff".to_string())));
+    }
+
+    #[test]
+    fn test_report_only_is_rendered_under_its_own_header() {
+        let headers = SecurityHeaders::builder()
+            .content_security_policy_report_only(
+                ContentSecurityPolicy::new().script_src(vec!["'self'"]),
+            )
+            .build()
+            .unwrap();
+
+        assert!(headers.header_pairs().contains(&(
+            CONTENT_SECURITY_POLICY_REPORT_ONLY,
+            "script-src 'self'".to_string()
+        )));
+        assert!(!headers
+            .header_pairs()
+            .iter()
+            .any(|(name, _)| *name == CONTENT_SECURITY_POLICY));
+    }
+
+    #[test]
+    fn test_report_only_alone_satisfies_the_at_least_one_header_rule() {
+        assert!(SecurityHeaders::builder()
+            .content_security_policy_report_only(
+                ContentSecurityPolicy::new().default_src(vec!["'self'"])
+            )
+            .build()
+            .is_ok());
+    }
+
+    #[test]
+    fn test_enforcing_and_report_only_coexist() {
+        let headers = SecurityHeaders::builder()
+            .content_security_policy(
+                ContentSecurityPolicy::new().script_src(vec!["'self'", "'unsafe-inline'"]),
+            )
+            .content_security_policy_report_only(
+                ContentSecurityPolicy::new().script_src(vec!["'self'"]),
+            )
+            .build()
+            .unwrap();
+
+        let pairs = headers.header_pairs();
+        assert!(pairs.contains(&(
+            CONTENT_SECURITY_POLICY,
+            "script-src 'self' 'unsafe-inline'".to_string()
+        )));
+        assert!(pairs.contains(&(
+            CONTENT_SECURITY_POLICY_REPORT_ONLY,
+            "script-src 'self'".to_string()
+        )));
+    }
+
+    #[test]
+    fn test_report_only_is_validated_at_build_time() {
+        let result = SecurityHeaders::builder()
+            .content_security_policy_report_only(
+                ContentSecurityPolicy::new().default_src(vec!["https://evil\r\nX-Evil: 1"]),
+            )
+            .build();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_both_policies_share_one_nonce() {
+        // The whole point of a report-only dry run is that it behaves like the
+        // eventual enforcement -- which it cannot if the two carry different nonces.
+        let headers = SecurityHeaders::builder()
+            .content_security_policy(
+                ContentSecurityPolicy::new()
+                    .script_src(vec!["'self'", "'unsafe-inline'"])
+                    .nonce_for(["script-src"]),
+            )
+            .content_security_policy_report_only(
+                ContentSecurityPolicy::new()
+                    .script_src(vec!["'self'"])
+                    .nonce_for(["script-src"]),
+            )
+            .build()
+            .unwrap();
+
+        assert!(headers.needs_nonce());
+
+        let nonce = Nonce::from_encoded("dGVzdA==").unwrap();
+        let pairs = headers.nonce_header_pairs(&nonce).unwrap();
+
+        assert_eq!(pairs.len(), 2);
+        for (_, value) in &pairs {
+            assert!(
+                value.contains("'nonce-dGVzdA=='"),
+                "missing nonce in {value}"
+            );
+        }
+        // Neither is duplicated in the static set.
+        assert!(headers.header_pairs().is_empty());
+    }
+
+    #[test]
+    fn test_nonce_needed_when_only_report_only_asks_for_one() {
+        let headers = SecurityHeaders::builder()
+            .content_security_policy(ContentSecurityPolicy::new().script_src(vec!["'self'"]))
+            .content_security_policy_report_only(
+                ContentSecurityPolicy::new()
+                    .script_src(vec!["'self'"])
+                    .nonce_for(["script-src"]),
+            )
+            .build()
+            .unwrap();
+
+        assert!(headers.needs_nonce());
+
+        let nonce = Nonce::from_encoded("dGVzdA==").unwrap();
+        let dynamic = headers.nonce_header_pairs(&nonce).unwrap();
+
+        // Only the report-only policy varies per request; the enforcing one stays static.
+        assert_eq!(dynamic.len(), 1);
+        assert_eq!(dynamic[0].0, CONTENT_SECURITY_POLICY_REPORT_ONLY);
+        assert!(headers
+            .header_pairs()
+            .iter()
+            .any(|(name, _)| *name == CONTENT_SECURITY_POLICY));
     }
 
     #[test]

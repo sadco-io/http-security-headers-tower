@@ -173,6 +173,49 @@ let csp = ContentSecurityPolicy::new()
 A configuration that asks for a nonce while the `nonce` feature is off panics when the
 layer is constructed, rather than quietly serving a policy without one.
 
+## Rolling out a stricter policy
+
+`Content-Security-Policy-Report-Only` lets the browser evaluate a policy and report
+violations without enforcing it. That is the safe way to tighten a policy against real
+traffic: keep the permissive one enforcing, put the intended one in report-only, and
+read the reports before swapping them over.
+
+```rust
+use http_security_headers::{ContentSecurityPolicy, SecurityHeaders};
+
+let headers = SecurityHeaders::builder()
+    // Enforced today.
+    .content_security_policy(
+        ContentSecurityPolicy::new().script_src(vec!["'self'", "'unsafe-inline'"]),
+    )
+    // What we intend to enforce once the reports come back clean.
+    .content_security_policy_report_only(
+        ContentSecurityPolicy::new()
+            .script_src(vec!["'self'"])
+            .report_uri(vec!["/csp-report"]),
+    )
+    .build()
+    .unwrap();
+```
+
+If either policy uses a nonce, both are rendered with the **same** per-request nonce —
+the one your handler receives. A dry run is only meaningful if it carries the nonce of
+the policy it is rehearsing.
+
+## Letting a route set its own headers
+
+By default the configured value wins, which is what a blanket policy should do. When a
+route legitimately sets its own — a page building a bespoke CSP, an endpoint that must be
+framable — `if_not_present()` makes the middleware fill in only what is missing:
+
+```rust
+use http_security_headers::{Preset, SecurityHeadersLayer};
+
+let layer = SecurityHeadersLayer::new(Preset::Strict.build()).if_not_present();
+```
+
+Available on the Actix middleware too.
+
 ## Presets
 
 ### Strict

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-27
+
+### Added
+- **`Content-Security-Policy-Report-Only`**, via
+  `SecurityHeadersBuilder::content_security_policy_report_only`. The browser evaluates
+  the policy and reports violations without enforcing it, which makes it the safe way
+  to trial a tighter policy against real traffic: keep the permissive policy enforcing,
+  put the intended one in report-only, and read the reports before swapping them.
+  Both headers can be set at once and both are sent.
+- `SecurityHeaders::content_security_policy_report_only()`,
+  `csp_report_only_with_nonce()` and `nonce_header_pairs()`.
+- **`if_not_present()`** on `SecurityHeadersLayer` and `SecurityHeadersMiddleware`.
+  The middleware then fills in only the headers a response does not already carry,
+  instead of overwriting them. For routes that legitimately set their own value -- a
+  page building a bespoke CSP, an endpoint that must be framable. Overwriting remains
+  the default, so existing behaviour is unchanged.
+
+### Notes
+- When either policy asks for a nonce, both are rendered with the **same** per-request
+  nonce, and it is the same value handed to the handler. A report-only dry run is only
+  meaningful if it carries the nonce of the policy it is rehearsing.
+- A policy that does not use a nonce stays in the pre-rendered set from 0.3.0, so
+  adding a report-only policy costs nothing per request unless it needs a nonce.
+
+
 ## [0.3.0] - 2026-08-26
 
 ### Added
@@ -132,7 +157,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation and examples
 - Feature flags for optional dependencies
 
-[Unreleased]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sadco-io/http-security-headers-tower/releases/tag/v0.1.0
