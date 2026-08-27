@@ -40,7 +40,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! http-security-headers = { version = "0.3", features = ["middleware"] }
+//! http-security-headers = { version = "0.4", features = ["middleware"] }
 //! ```
 //!
 //! Then use the middleware layer:
