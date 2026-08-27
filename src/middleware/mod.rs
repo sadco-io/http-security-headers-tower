@@ -7,7 +7,6 @@
 //! built, and stored as a ready-made [`HeaderMap`]. Applying them to a response is a
 //! handful of refcount bumps -- no formatting, no allocation, no parsing per request.
 
-use crate::config::CONTENT_SECURITY_POLICY;
 use crate::SecurityHeaders;
 use http::header::{HeaderName, HeaderValue};
 use http::{HeaderMap, Request, Response};
@@ -26,13 +25,13 @@ use crate::Nonce;
 use tracing::trace;
 
 /// The configuration, with its header values pre-parsed into `http` types.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Prepared {
     config: Arc<SecurityHeaders>,
     /// Every header whose value is the same for every response.
     static_headers: HeaderMap,
-    /// Set when the CSP carries a per-request nonce.
-    csp_name: HeaderName,
+    /// When true, a header the inner service already set is left alone.
+    if_not_present: bool,
 }
 
 impl Prepared {
@@ -62,14 +61,22 @@ impl Prepared {
         Self {
             config,
             static_headers,
-            csp_name: HeaderName::from_static(CONTENT_SECURITY_POLICY),
+            if_not_present: false,
         }
     }
 
-    /// Applies every static header to `headers`, overwriting anything already set.
+    /// Applies one header, honouring the configured overwrite behaviour.
+    fn put(&self, headers: &mut HeaderMap, name: &HeaderName, value: &HeaderValue) {
+        if self.if_not_present && headers.contains_key(name) {
+            return;
+        }
+        headers.insert(name.clone(), value.clone());
+    }
+
+    /// Applies every header whose value does not vary per request.
     fn apply_static(&self, headers: &mut HeaderMap) {
         for (name, value) in &self.static_headers {
-            headers.insert(name.clone(), value.clone());
+            self.put(headers, name, value);
         }
     }
 }
@@ -120,6 +127,27 @@ impl SecurityHeadersLayer {
         }
     }
 
+    /// Leaves any header the inner service already set on the response alone.
+    ///
+    /// By default the configured value wins, which is what you want for a blanket
+    /// policy. Switch this on when a route legitimately sets its own value -- a
+    /// page that builds a bespoke CSP, or an endpoint that must be framable -- and
+    /// the middleware should fill in only what is missing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use http_security_headers::{Preset, SecurityHeadersLayer};
+    ///
+    /// // A handler that sets its own X-Frame-Options keeps it; everything else
+    /// // still comes from the preset.
+    /// let layer = SecurityHeadersLayer::new(Preset::Strict.build()).if_not_present();
+    /// ```
+    pub fn if_not_present(mut self) -> Self {
+        Arc::make_mut(&mut self.prepared).if_not_present = true;
+        self
+    }
+
     /// Returns the configuration this layer applies.
     pub fn config(&self) -> &Arc<SecurityHeaders> {
         &self.prepared.config
@@ -164,42 +192,53 @@ where
 
         // A nonce must be minted before the handler runs, so the handler can embed
         // the same value in the markup it returns.
-        let csp = self.render_csp(&mut req);
+        let nonce_headers = self.nonce_headers(&mut req);
 
         SecurityHeadersFuture {
             future: self.inner.call(req),
             prepared: self.prepared.clone(),
-            csp,
+            nonce_headers,
         }
     }
 }
 
 impl<S> SecurityHeadersService<S> {
     #[cfg(feature = "nonce")]
-    fn render_csp<ReqBody>(&self, req: &mut Request<ReqBody>) -> Option<HeaderValue> {
+    fn nonce_headers<ReqBody>(&self, req: &mut Request<ReqBody>) -> Vec<(HeaderName, HeaderValue)> {
         if !self.prepared.config.needs_nonce() {
-            return None;
+            return Vec::new();
         }
 
+        // One nonce per request, shared by the enforcing and report-only
+        // policies -- they must agree with the value the handler embeds.
         let nonce = Nonce::random();
         let rendered = self
             .prepared
             .config
-            .csp_with_nonce(&nonce)?
-            .expect("SecurityHeadersBuilder::build validated this CSP");
+            .nonce_header_pairs(&nonce)
+            .expect("SecurityHeadersBuilder::build validated these policies");
 
         // Hand the nonce to the handler. In Axum this is `Extension<Nonce>`.
         req.extensions_mut().insert(nonce);
 
-        Some(
-            HeaderValue::from_str(&rendered)
-                .expect("SecurityHeadersBuilder::build validated this CSP"),
-        )
+        rendered
+            .into_iter()
+            .map(|(name, value)| {
+                (
+                    HeaderName::from_static(name),
+                    HeaderValue::from_str(&value)
+                        .expect("SecurityHeadersBuilder::build validated these policies"),
+                )
+            })
+            .collect()
     }
 
     #[cfg(not(feature = "nonce"))]
-    fn render_csp<ReqBody>(&self, _req: &mut Request<ReqBody>) -> Option<HeaderValue> {
-        None
+    fn nonce_headers<ReqBody>(
+        &self,
+        _req: &mut Request<ReqBody>,
+    ) -> Vec<(HeaderName, HeaderValue)> {
+        Vec::new()
     }
 }
 
@@ -209,7 +248,7 @@ pin_project! {
         #[pin]
         future: F,
         prepared: Arc<Prepared>,
-        csp: Option<HeaderValue>,
+        nonce_headers: Vec<(HeaderName, HeaderValue)>,
     }
 }
 
@@ -228,8 +267,8 @@ where
                 let headers = response.headers_mut();
                 this.prepared.apply_static(headers);
 
-                if let Some(csp) = this.csp.take() {
-                    headers.insert(this.prepared.csp_name.clone(), csp);
+                for (name, value) in this.nonce_headers.drain(..) {
+                    this.prepared.put(headers, &name, &value);
                 }
 
                 #[cfg(feature = "observability")]
@@ -280,9 +319,7 @@ pub fn add_security_headers<B>(response: &mut Response<B>, config: &SecurityHead
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Preset;
-    #[cfg(feature = "nonce")]
-    use crate::{ContentSecurityPolicy, SecurityHeaders};
+    use crate::{ContentSecurityPolicy, Preset, SecurityHeaders};
     use bytes::Bytes;
     use http::Response;
     use http_body_util::Full;
@@ -399,6 +436,165 @@ mod tests {
                 .get(http::header::X_FRAME_OPTIONS)
                 .unwrap(),
             "SAMEORIGIN"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_if_not_present_keeps_the_handlers_value() {
+        let layer = SecurityHeadersLayer::new(Preset::Relaxed.build()).if_not_present();
+
+        let service = layer.layer(service_fn(|_req: Request<()>| async {
+            let mut response = Response::new(Full::new(Bytes::from_static(b"ok")));
+            response.headers_mut().insert(
+                http::header::X_FRAME_OPTIONS,
+                HeaderValue::from_static("DENY"),
+            );
+            Ok::<_, Infallible>(response)
+        }));
+
+        let response = service.oneshot(Request::new(())).await.unwrap();
+        let headers = response.headers();
+
+        // The handler set this one, so it survives...
+        assert_eq!(headers.get(http::header::X_FRAME_OPTIONS).unwrap(), "DENY");
+        // ...but everything it did not set is still filled in.
+        assert!(headers.contains_key(http::header::STRICT_TRANSPORT_SECURITY));
+        assert!(headers.contains_key(http::header::X_CONTENT_TYPE_OPTIONS));
+        assert!(headers.contains_key(http::header::REFERRER_POLICY));
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_remains_the_default() {
+        // Same setup as above without `if_not_present()`: the config must win.
+        let layer = SecurityHeadersLayer::new(Preset::Relaxed.build());
+
+        let service = layer.layer(service_fn(|_req: Request<()>| async {
+            let mut response = Response::new(Full::new(Bytes::from_static(b"ok")));
+            response.headers_mut().insert(
+                http::header::X_FRAME_OPTIONS,
+                HeaderValue::from_static("DENY"),
+            );
+            Ok::<_, Infallible>(response)
+        }));
+
+        let response = service.oneshot(Request::new(())).await.unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::X_FRAME_OPTIONS)
+                .unwrap(),
+            "SAMEORIGIN"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_report_only_header_is_emitted() {
+        let config = SecurityHeaders::builder()
+            .content_security_policy(ContentSecurityPolicy::new().script_src(vec!["'self'"]))
+            .content_security_policy_report_only(
+                ContentSecurityPolicy::new()
+                    .script_src(vec!["'none'"])
+                    .report_uri(vec!["/csp-report"]),
+            )
+            .build()
+            .unwrap();
+
+        let response = SecurityHeadersLayer::new(config)
+            .layer(ok_service())
+            .oneshot(Request::new(()))
+            .await
+            .unwrap();
+
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("content-security-policy").unwrap(),
+            "script-src 'self'"
+        );
+        assert_eq!(
+            headers.get("content-security-policy-report-only").unwrap(),
+            "report-uri /csp-report; script-src 'none'"
+        );
+    }
+
+    #[cfg(feature = "nonce")]
+    #[tokio::test]
+    async fn test_both_csp_headers_get_the_same_nonce_as_the_handler() {
+        let config = SecurityHeaders::builder()
+            .content_security_policy(
+                ContentSecurityPolicy::new()
+                    .script_src(vec!["'self'", "'unsafe-inline'"])
+                    .nonce_for(["script-src"]),
+            )
+            .content_security_policy_report_only(
+                ContentSecurityPolicy::new()
+                    .script_src(vec!["'self'"])
+                    .nonce_for(["script-src"]),
+            )
+            .build()
+            .unwrap();
+
+        let service =
+            SecurityHeadersLayer::new(config).layer(service_fn(|req: Request<()>| async move {
+                let nonce = req.extensions().get::<Nonce>().unwrap().clone();
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(nonce.into_string()))))
+            }));
+
+        let response = service.oneshot(Request::new(())).await.unwrap();
+        let enforced = response
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let reported = response
+            .headers()
+            .get("content-security-policy-report-only")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let body = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let handler_nonce = String::from_utf8(body.to_vec()).unwrap();
+        let expected = format!("'nonce-{handler_nonce}'");
+
+        // A dry run is only meaningful if it carries the same nonce as the
+        // policy it is rehearsing, and as the markup the handler produced.
+        assert!(enforced.contains(&expected), "enforced: {enforced}");
+        assert!(reported.contains(&expected), "report-only: {reported}");
+    }
+
+    #[cfg(feature = "nonce")]
+    #[tokio::test]
+    async fn test_if_not_present_also_applies_to_the_nonce_csp() {
+        let config = SecurityHeaders::builder()
+            .content_security_policy(
+                ContentSecurityPolicy::new()
+                    .script_src(vec!["'self'"])
+                    .nonce_for(["script-src"]),
+            )
+            .build()
+            .unwrap();
+
+        let service = SecurityHeadersLayer::new(config)
+            .if_not_present()
+            .layer(service_fn(|_req: Request<()>| async {
+                let mut response = Response::new(Full::new(Bytes::from_static(b"ok")));
+                response.headers_mut().insert(
+                    "content-security-policy",
+                    HeaderValue::from_static("default-src 'none'"),
+                );
+                Ok::<_, Infallible>(response)
+            }));
+
+        let response = service.oneshot(Request::new(())).await.unwrap();
+        assert_eq!(
+            response.headers().get("content-security-policy").unwrap(),
+            "default-src 'none'"
         );
     }
 

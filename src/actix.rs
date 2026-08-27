@@ -8,7 +8,6 @@
 //! `http` 1. Both are rendered once from the same validated
 //! [`header_pairs`](SecurityHeaders::header_pairs).
 
-use crate::config::CONTENT_SECURITY_POLICY;
 use crate::SecurityHeaders;
 use actix_web::body::MessageBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
@@ -23,11 +22,12 @@ use crate::Nonce;
 use actix_web::HttpMessage;
 
 /// The configuration, with its header values pre-parsed into Actix's `http` types.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Prepared {
     config: Arc<SecurityHeaders>,
     static_headers: HeaderMap,
-    csp_name: HeaderName,
+    /// When true, a header the inner service already set is left alone.
+    if_not_present: bool,
 }
 
 impl Prepared {
@@ -54,13 +54,21 @@ impl Prepared {
         Self {
             config,
             static_headers,
-            csp_name: HeaderName::from_static(CONTENT_SECURITY_POLICY),
+            if_not_present: false,
         }
+    }
+
+    /// Applies one header, honouring the configured overwrite behaviour.
+    fn put(&self, headers: &mut HeaderMap, name: &HeaderName, value: &HeaderValue) {
+        if self.if_not_present && headers.contains_key(name) {
+            return;
+        }
+        headers.insert(name.clone(), value.clone());
     }
 
     fn apply_static(&self, headers: &mut HeaderMap) {
         for (name, value) in &self.static_headers {
-            headers.insert(name.clone(), value.clone());
+            self.put(headers, name, value);
         }
     }
 }
@@ -105,6 +113,16 @@ impl SecurityHeadersMiddleware {
         }
     }
 
+    /// Leaves any header the wrapped service already set on the response alone.
+    ///
+    /// By default the configured value wins. Switch this on when a route
+    /// legitimately sets its own value and the middleware should fill in only
+    /// what is missing.
+    pub fn if_not_present(mut self) -> Self {
+        Arc::make_mut(&mut self.prepared).if_not_present = true;
+        self
+    }
+
     /// Returns the configuration this middleware applies.
     pub fn config(&self) -> &Arc<SecurityHeaders> {
         &self.prepared.config
@@ -140,30 +158,37 @@ pub struct SecurityHeadersMiddlewareService<S> {
 
 impl<S> SecurityHeadersMiddlewareService<S> {
     #[cfg(feature = "nonce")]
-    fn render_csp(&self, req: &ServiceRequest) -> Option<HeaderValue> {
+    fn nonce_headers(&self, req: &ServiceRequest) -> Vec<(HeaderName, HeaderValue)> {
         if !self.prepared.config.needs_nonce() {
-            return None;
+            return Vec::new();
         }
 
+        // One nonce per request, shared by the enforcing and report-only policies.
         let nonce = Nonce::random();
         let rendered = self
             .prepared
             .config
-            .csp_with_nonce(&nonce)?
-            .expect("SecurityHeadersBuilder::build validated this CSP");
+            .nonce_header_pairs(&nonce)
+            .expect("SecurityHeadersBuilder::build validated these policies");
 
         // Handlers reach this with `web::ReqData<Nonce>`.
         req.extensions_mut().insert(nonce);
 
-        Some(
-            HeaderValue::from_str(&rendered)
-                .expect("SecurityHeadersBuilder::build validated this CSP"),
-        )
+        rendered
+            .into_iter()
+            .map(|(name, value)| {
+                (
+                    HeaderName::from_static(name),
+                    HeaderValue::from_str(&value)
+                        .expect("SecurityHeadersBuilder::build validated these policies"),
+                )
+            })
+            .collect()
     }
 
     #[cfg(not(feature = "nonce"))]
-    fn render_csp(&self, _req: &ServiceRequest) -> Option<HeaderValue> {
-        None
+    fn nonce_headers(&self, _req: &ServiceRequest) -> Vec<(HeaderName, HeaderValue)> {
+        Vec::new()
     }
 }
 
@@ -186,7 +211,7 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let prepared = self.prepared.clone();
-        let csp = self.render_csp(&req);
+        let nonce_headers = self.nonce_headers(&req);
         let fut = self.service.call(req);
 
         Box::pin(async move {
@@ -194,8 +219,8 @@ where
             let headers = res.response_mut().headers_mut();
 
             prepared.apply_static(headers);
-            if let Some(csp) = csp {
-                headers.insert(prepared.csp_name.clone(), csp);
+            for (name, value) in &nonce_headers {
+                prepared.put(headers, name, value);
             }
 
             Ok(res)
@@ -277,6 +302,113 @@ mod tests {
                 .unwrap(),
             "SAMEORIGIN"
         );
+    }
+
+    #[actix_web::test]
+    async fn if_not_present_keeps_the_handlers_value() {
+        let app = test::init_service(
+            App::new()
+                .wrap(SecurityHeadersMiddleware::new(Preset::Relaxed.build()).if_not_present())
+                .route(
+                    "/",
+                    web::get().to(|| async {
+                        HttpResponse::Ok()
+                            .insert_header(("x-frame-options", "DENY"))
+                            .finish()
+                    }),
+                ),
+        )
+        .await;
+
+        let req = test::TestRequest::get().uri("/").to_request();
+        let res = test::call_service(&app, req).await;
+        let headers = res.headers();
+
+        assert_eq!(headers.get("x-frame-options").unwrap(), "DENY");
+        assert!(headers.contains_key(actix_web::http::header::STRICT_TRANSPORT_SECURITY));
+    }
+
+    #[actix_web::test]
+    async fn report_only_header_is_emitted() {
+        let config = crate::SecurityHeaders::builder()
+            .content_security_policy(crate::ContentSecurityPolicy::new().script_src(vec!["'self'"]))
+            .content_security_policy_report_only(
+                crate::ContentSecurityPolicy::new().script_src(vec!["'none'"]),
+            )
+            .build()
+            .unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .wrap(SecurityHeadersMiddleware::new(config))
+                .route("/", web::get().to(|| async { HttpResponse::Ok().finish() })),
+        )
+        .await;
+
+        let req = test::TestRequest::get().uri("/").to_request();
+        let res = test::call_service(&app, req).await;
+
+        assert_eq!(
+            res.headers()
+                .get("content-security-policy-report-only")
+                .unwrap(),
+            "script-src 'none'"
+        );
+    }
+
+    #[cfg(feature = "nonce")]
+    #[actix_web::test]
+    async fn both_csp_headers_share_the_handlers_nonce() {
+        let config = crate::SecurityHeaders::builder()
+            .content_security_policy(
+                crate::ContentSecurityPolicy::new()
+                    .script_src(vec!["'self'", "'unsafe-inline'"])
+                    .nonce_for(["script-src"]),
+            )
+            .content_security_policy_report_only(
+                crate::ContentSecurityPolicy::new()
+                    .script_src(vec!["'self'"])
+                    .nonce_for(["script-src"]),
+            )
+            .build()
+            .unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .wrap(SecurityHeadersMiddleware::new(config))
+                .route(
+                    "/",
+                    web::get().to(|nonce: Option<web::ReqData<Nonce>>| async move {
+                        HttpResponse::Ok().body(nonce.unwrap().as_str().to_string())
+                    }),
+                ),
+        )
+        .await;
+
+        let req = test::TestRequest::get().uri("/").to_request();
+        let res = test::call_service(&app, req).await;
+
+        let enforced = res
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let reported = res
+            .headers()
+            .get("content-security-policy-report-only")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let body = test::read_body(res).await;
+        let handler_nonce = String::from_utf8(body.to_vec()).unwrap();
+        let expected = format!("'nonce-{handler_nonce}'");
+
+        assert!(enforced.contains(&expected), "enforced: {enforced}");
+        assert!(reported.contains(&expected), "report-only: {reported}");
     }
 
     #[cfg(feature = "nonce")]
