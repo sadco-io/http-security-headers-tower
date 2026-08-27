@@ -1,21 +1,21 @@
-# Every PR auto-requests review from the owners listed here, and
-# `main` is protected with "require review from Code Owners", so a
-# matching owner's approval is required before merge.
+# Owners listed here are automatically requested to review pull requests that
+# touch the matching paths, and `main` requires an approving review from a
+# code owner before a pull request can be merged.
 #
-# When adding path-specific entries below the wildcard, note that the
-# LAST matching rule wins -- a later narrow rule replaces the owners
-# from the wildcard for those paths rather than adding to them.
+# Owners must have write access to this repository.
+#
+# Rules are evaluated in order and the last matching rule wins: a narrow rule
+# below the wildcard replaces the wildcard's owners for those paths rather
+# than adding to them.
 
-* @danielrcurtis
+* @danielrcurtis @sophneum @Owebiwan
 
-# The security posture of this crate lives in these files: the header
-# policies themselves, the presets that most users adopt wholesale,
-# and the nonce generation. Called out so the ownership is explicit if
-# the wildcard above is ever narrowed.
-/src/policy/ @danielrcurtis
-/src/preset.rs @danielrcurtis
+# Header policies, the presets most users adopt wholesale, and nonce
+# generation.
+/src/policy/ @danielrcurtis @sophneum @Owebiwan
+/src/preset.rs @danielrcurtis @sophneum @Owebiwan
 
-# Supply chain and CI. deny.toml governs which advisories and licenses
-# are tolerated; the workflows are what enforce every other check.
-/deny.toml @danielrcurtis
-/.github/ @danielrcurtis
+# Supply chain and CI. deny.toml governs which advisories and licenses are
+# accepted; the workflows run every other check.
+/deny.toml @danielrcurtis @sophneum @Owebiwan
+/.github/ @danielrcurtis @sophneum @Owebiwan

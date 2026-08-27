@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rust-version` was `1.75.0`, which the crate could not build with. It is now `1.85`,
   with the `actix` feature documented and CI-enforced at `1.88`.
 - `cargo fmt --check` did not pass on three example files.
+- **docs.rs rendered an incomplete page.** The manifest never told docs.rs to enable
+  features, and the default set is empty, so every optional module was omitted --
+  `http_security_headers/middleware/index.html` is a 404 on docs.rs for 0.2.0, on a
+  crate whose headline feature is Tower middleware. `[package.metadata.docs.rs]
+  all-features = true` fixes it from 0.3.0 onward; the metadata is baked in at publish
+  time and cannot be backfilled for 0.1.0 or 0.2.0.
 
 ### Changed
 - **MSRV raised to 1.85** (1.88 with the `actix` feature). See above — the previous
