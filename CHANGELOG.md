@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.1] - 2026-08-27
+## [0.4.0] - 2026-08-27
 
 ### Added
 - **`Content-Security-Policy-Report-Only`**, via
@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the default, so existing behaviour is unchanged.
 
 ### Notes
+- Released as 0.4.0 rather than 0.3.1. Everything here is additive and nothing was
+  removed or changed, so `^0.3` users are not broken -- but for a `0.y.z` crate the
+  `y` position is the one that signals new API, and these are new public items.
 - When either policy asks for a nonce, both are rendered with the **same** per-request
   nonce, and it is the same value handed to the handler. A report-only dry run is only
   meaningful if it carries the nonce of the policy it is rehearsing.
@@ -157,8 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation and examples
 - Feature flags for optional dependencies
 
-[Unreleased]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.3.1...HEAD
-[0.3.1]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.3.0...v0.3.1
+[Unreleased]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sadco-io/http-security-headers-tower/releases/tag/v0.1.0

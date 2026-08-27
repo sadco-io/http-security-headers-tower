@@ -39,28 +39,28 @@ Core only:
 
 ```toml
 [dependencies]
-http-security-headers = "0.3"
+http-security-headers = "0.4"
 ```
 
 With Tower/Axum middleware:
 
 ```toml
 [dependencies]
-http-security-headers = { version = "0.3", features = ["middleware"] }
+http-security-headers = { version = "0.4", features = ["middleware"] }
 ```
 
 With per-request CSP nonces:
 
 ```toml
 [dependencies]
-http-security-headers = { version = "0.3", features = ["middleware", "nonce"] }
+http-security-headers = { version = "0.4", features = ["middleware", "nonce"] }
 ```
 
 With Actix-Web integration:
 
 ```toml
 [dependencies]
-http-security-headers = { version = "0.3", features = ["actix"] }
+http-security-headers = { version = "0.4", features = ["actix"] }
 ```
 
 ## Quick Start
