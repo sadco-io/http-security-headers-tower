@@ -287,9 +287,6 @@ mod tests {
             CrossOriginEmbedderPolicy::RequireCorp.to_string(),
             "require-corp"
         );
-        assert_eq!(
-            CrossOriginResourcePolicy::SameSite.to_string(),
-            "same-site"
-        );
+        assert_eq!(CrossOriginResourcePolicy::SameSite.to_string(), "same-site");
     }
 }

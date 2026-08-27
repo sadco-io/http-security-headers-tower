@@ -2,14 +2,68 @@
 //!
 //! Enable the `actix` feature to use the provided middleware that applies
 //! `http-security-headers` to every outgoing response.
+//!
+//! Actix-Web 4 is built on `http` 0.2, so this module keeps its own pre-parsed
+//! [`HeaderMap`] rather than sharing the one the Tower middleware builds from
+//! `http` 1. Both are rendered once from the same validated
+//! [`header_pairs`](SecurityHeaders::header_pairs).
 
+use crate::config::CONTENT_SECURITY_POLICY;
 use crate::SecurityHeaders;
 use actix_web::body::MessageBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
+use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
 use actix_web::Error;
-use actix_web::http::header::HeaderName;
 use futures_util::future::{ready, LocalBoxFuture, Ready};
 use std::sync::Arc;
+
+#[cfg(feature = "nonce")]
+use crate::Nonce;
+#[cfg(feature = "nonce")]
+use actix_web::HttpMessage;
+
+/// The configuration, with its header values pre-parsed into Actix's `http` types.
+#[derive(Debug)]
+struct Prepared {
+    config: Arc<SecurityHeaders>,
+    static_headers: HeaderMap,
+    csp_name: HeaderName,
+}
+
+impl Prepared {
+    fn new(config: Arc<SecurityHeaders>) -> Self {
+        #[cfg(not(feature = "nonce"))]
+        assert!(
+            !config.needs_nonce(),
+            "this SecurityHeaders configuration asks for a per-request CSP nonce, but the \
+             `nonce` feature of http-security-headers is not enabled; enable it or drop the \
+             `with_nonce()` / `nonce_for()` call"
+        );
+
+        let mut static_headers = HeaderMap::with_capacity(config.header_pairs().len());
+
+        for (name, value) in config.header_pairs() {
+            // Validated by `SecurityHeadersBuilder::build`; see the Tower module for
+            // why this is an assertion rather than a silently skipped header.
+            let name = HeaderName::from_static(name);
+            let value = HeaderValue::from_str(value)
+                .expect("SecurityHeadersBuilder::build validated this header value");
+            static_headers.insert(name, value);
+        }
+
+        Self {
+            config,
+            static_headers,
+            csp_name: HeaderName::from_static(CONTENT_SECURITY_POLICY),
+        }
+    }
+
+    fn apply_static(&self, headers: &mut HeaderMap) {
+        for (name, value) in &self.static_headers {
+            headers.insert(name.clone(), value.clone());
+        }
+    }
+}
 
 /// Actix-Web middleware that applies configured security headers to responses.
 ///
@@ -18,15 +72,12 @@ use std::sync::Arc;
 /// ```rust,ignore
 /// use actix_web::{web, App, HttpResponse, HttpServer};
 /// use http_security_headers::{Preset, SecurityHeadersMiddleware};
-/// use std::sync::Arc;
 ///
 /// #[actix_web::main]
 /// async fn main() -> std::io::Result<()> {
-///     let headers = Arc::new(Preset::Strict.build());
-///
-///     HttpServer::new(move || {
+///     HttpServer::new(|| {
 ///         App::new()
-///             .wrap(SecurityHeadersMiddleware::new(headers.clone()))
+///             .wrap(SecurityHeadersMiddleware::new(Preset::Strict.build()))
 ///             .route("/", web::get().to(|| async { HttpResponse::Ok().body("Hello") }))
 ///     })
 ///     .bind(("127.0.0.1", 3000))?
@@ -34,15 +85,29 @@ use std::sync::Arc;
 ///     .await
 /// }
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SecurityHeadersMiddleware {
-    headers: Arc<SecurityHeaders>,
+    prepared: Arc<Prepared>,
 }
 
 impl SecurityHeadersMiddleware {
     /// Creates a new Actix middleware from the provided configuration.
-    pub fn new(headers: Arc<SecurityHeaders>) -> Self {
-        Self { headers }
+    ///
+    /// Accepts either a [`SecurityHeaders`] or an `Arc<SecurityHeaders>`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the configuration requests a per-request CSP nonce but the `nonce`
+    /// feature is not enabled.
+    pub fn new(headers: impl Into<Arc<SecurityHeaders>>) -> Self {
+        Self {
+            prepared: Arc::new(Prepared::new(headers.into())),
+        }
+    }
+
+    /// Returns the configuration this middleware applies.
+    pub fn config(&self) -> &Arc<SecurityHeaders> {
+        &self.prepared.config
     }
 }
 
@@ -61,15 +126,45 @@ where
     fn new_transform(&self, service: S) -> Self::Future {
         ready(Ok(SecurityHeadersMiddlewareService {
             service,
-            headers: self.headers.clone(),
+            prepared: self.prepared.clone(),
         }))
     }
 }
 
 /// Inner service that applies headers after the wrapped service completes.
+#[derive(Debug)]
 pub struct SecurityHeadersMiddlewareService<S> {
     service: S,
-    headers: Arc<SecurityHeaders>,
+    prepared: Arc<Prepared>,
+}
+
+impl<S> SecurityHeadersMiddlewareService<S> {
+    #[cfg(feature = "nonce")]
+    fn render_csp(&self, req: &ServiceRequest) -> Option<HeaderValue> {
+        if !self.prepared.config.needs_nonce() {
+            return None;
+        }
+
+        let nonce = Nonce::random();
+        let rendered = self
+            .prepared
+            .config
+            .csp_with_nonce(&nonce)?
+            .expect("SecurityHeadersBuilder::build validated this CSP");
+
+        // Handlers reach this with `web::ReqData<Nonce>`.
+        req.extensions_mut().insert(nonce);
+
+        Some(
+            HeaderValue::from_str(&rendered)
+                .expect("SecurityHeadersBuilder::build validated this CSP"),
+        )
+    }
+
+    #[cfg(not(feature = "nonce"))]
+    fn render_csp(&self, _req: &ServiceRequest) -> Option<HeaderValue> {
+        None
+    }
 }
 
 impl<S, B> Service<ServiceRequest> for SecurityHeadersMiddlewareService<S>
@@ -90,82 +185,21 @@ where
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let headers = self.headers.clone();
+        let prepared = self.prepared.clone();
+        let csp = self.render_csp(&req);
         let fut = self.service.call(req);
 
         Box::pin(async move {
             let mut res = fut.await?;
-            apply_headers(res.response_mut().headers_mut(), &headers);
+            let headers = res.response_mut().headers_mut();
+
+            prepared.apply_static(headers);
+            if let Some(csp) = csp {
+                headers.insert(prepared.csp_name.clone(), csp);
+            }
+
             Ok(res)
         })
-    }
-}
-
-fn apply_headers(
-    headers: &mut actix_web::http::header::HeaderMap,
-    config: &SecurityHeaders,
-) {
-    // Content-Security-Policy
-    if let Some(csp) = config.content_security_policy() {
-        if let Ok(value) = csp.to_header_value() {
-            if let Ok(header_value) = value.parse() {
-                headers.insert(actix_web::http::header::CONTENT_SECURITY_POLICY, header_value);
-            }
-        }
-    }
-
-    // Strict-Transport-Security
-    if let Some(hsts) = config.strict_transport_security() {
-        if let Ok(value) = hsts.to_header_value() {
-            if let Ok(header_value) = value.parse() {
-                headers.insert(actix_web::http::header::STRICT_TRANSPORT_SECURITY, header_value);
-            }
-        }
-    }
-
-    // X-Frame-Options
-    if let Some(xfo) = config.x_frame_options() {
-        if let Ok(header_value) = xfo.as_str().parse() {
-            headers.insert(actix_web::http::header::X_FRAME_OPTIONS, header_value);
-        }
-    }
-
-    // X-Content-Type-Options
-    if config.x_content_type_options_enabled() {
-        if let Ok(header_value) = "nosniff".parse() {
-            headers.insert(actix_web::http::header::X_CONTENT_TYPE_OPTIONS, header_value);
-        }
-    }
-
-    // Referrer-Policy
-    if let Some(rp) = config.referrer_policy() {
-        if let Ok(header_value) = rp.as_str().parse() {
-            headers.insert(actix_web::http::header::REFERRER_POLICY, header_value);
-        }
-    }
-
-    // Cross-Origin-Opener-Policy
-    if let Some(coop) = config.cross_origin_opener_policy() {
-        const COOP: HeaderName = HeaderName::from_static("cross-origin-opener-policy");
-        if let Ok(header_value) = coop.as_str().parse() {
-            headers.insert(COOP, header_value);
-        }
-    }
-
-    // Cross-Origin-Embedder-Policy
-    if let Some(coep) = config.cross_origin_embedder_policy() {
-        const COEP: HeaderName = HeaderName::from_static("cross-origin-embedder-policy");
-        if let Ok(header_value) = coep.as_str().parse() {
-            headers.insert(COEP, header_value);
-        }
-    }
-
-    // Cross-Origin-Resource-Policy
-    if let Some(corp) = config.cross_origin_resource_policy() {
-        const CORP: HeaderName = HeaderName::from_static("cross-origin-resource-policy");
-        if let Ok(header_value) = corp.as_str().parse() {
-            headers.insert(CORP, header_value);
-        }
     }
 }
 
@@ -177,11 +211,9 @@ mod tests {
 
     #[actix_web::test]
     async fn middleware_adds_headers() {
-        let headers = Arc::new(Preset::Balanced.build());
-
         let app = test::init_service(
             App::new()
-                .wrap(SecurityHeadersMiddleware::new(headers))
+                .wrap(SecurityHeadersMiddleware::new(Preset::Balanced.build()))
                 .route("/", web::get().to(|| async { HttpResponse::Ok().finish() })),
         )
         .await;
@@ -195,6 +227,93 @@ mod tests {
         assert!(headers.contains_key(header::STRICT_TRANSPORT_SECURITY));
         assert!(headers.contains_key(header::X_FRAME_OPTIONS));
         assert!(headers.contains_key(header::X_CONTENT_TYPE_OPTIONS));
+        assert!(headers.contains_key(header::CONTENT_SECURITY_POLICY));
+        assert!(headers.contains_key("permissions-policy"));
+    }
+
+    #[actix_web::test]
+    async fn middleware_accepts_arc_and_owned() {
+        for middleware in [
+            SecurityHeadersMiddleware::new(Arc::new(Preset::Relaxed.build())),
+            SecurityHeadersMiddleware::new(Preset::Relaxed.build()),
+        ] {
+            let app = test::init_service(
+                App::new()
+                    .wrap(middleware)
+                    .route("/", web::get().to(|| async { HttpResponse::Ok().finish() })),
+            )
+            .await;
+
+            let req = test::TestRequest::get().uri("/").to_request();
+            let res = test::call_service(&app, req).await;
+            assert!(res
+                .headers()
+                .contains_key(actix_web::http::header::X_FRAME_OPTIONS));
+        }
+    }
+
+    #[actix_web::test]
+    async fn middleware_overwrites_handler_headers() {
+        let app = test::init_service(
+            App::new()
+                .wrap(SecurityHeadersMiddleware::new(Preset::Relaxed.build()))
+                .route(
+                    "/",
+                    web::get().to(|| async {
+                        HttpResponse::Ok()
+                            .insert_header(("x-frame-options", "DENY"))
+                            .finish()
+                    }),
+                ),
+        )
+        .await;
+
+        let req = test::TestRequest::get().uri("/").to_request();
+        let res = test::call_service(&app, req).await;
+
+        assert_eq!(
+            res.headers()
+                .get(actix_web::http::header::X_FRAME_OPTIONS)
+                .unwrap(),
+            "SAMEORIGIN"
+        );
+    }
+
+    #[cfg(feature = "nonce")]
+    #[actix_web::test]
+    async fn middleware_supplies_a_matching_nonce() {
+        let app = test::init_service(
+            App::new()
+                .wrap(SecurityHeadersMiddleware::new(
+                    Preset::BalancedNonce.build(),
+                ))
+                .route(
+                    "/",
+                    web::get().to(|nonce: Option<web::ReqData<Nonce>>| async move {
+                        let nonce = nonce.expect("middleware should supply a nonce");
+                        HttpResponse::Ok().body(nonce.as_str().to_string())
+                    }),
+                ),
+        )
+        .await;
+
+        let req = test::TestRequest::get().uri("/").to_request();
+        let res = test::call_service(&app, req).await;
+
+        let csp = res
+            .headers()
+            .get(actix_web::http::header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let body = test::read_body(res).await;
+        let handler_nonce = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(
+            csp.contains(&format!("'nonce-{handler_nonce}'")),
+            "handler nonce {handler_nonce} missing from CSP {csp}"
+        );
     }
 }
-

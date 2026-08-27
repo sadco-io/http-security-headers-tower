@@ -68,8 +68,14 @@ mod tests {
 
     #[test]
     fn test_from_str() {
-        assert_eq!(XFrameOptions::from_str("DENY").unwrap(), XFrameOptions::Deny);
-        assert_eq!(XFrameOptions::from_str("deny").unwrap(), XFrameOptions::Deny);
+        assert_eq!(
+            XFrameOptions::from_str("DENY").unwrap(),
+            XFrameOptions::Deny
+        );
+        assert_eq!(
+            XFrameOptions::from_str("deny").unwrap(),
+            XFrameOptions::Deny
+        );
         assert_eq!(
             XFrameOptions::from_str("SAMEORIGIN").unwrap(),
             XFrameOptions::SameOrigin

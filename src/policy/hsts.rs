@@ -104,8 +104,7 @@ impl StrictTransportSecurity {
 
             if max_age_secs < 31_536_000 {
                 return Err(Error::InvalidHsts(
-                    "preload requires max-age to be at least 31536000 seconds (1 year)"
-                        .to_string(),
+                    "preload requires max-age to be at least 31536000 seconds (1 year)".to_string(),
                 ));
             }
         }
@@ -151,7 +150,8 @@ impl StrictTransportSecurity {
             }
         }
 
-        let max_age = max_age.ok_or_else(|| Error::InvalidHsts("Missing max-age directive".to_string()))?;
+        let max_age =
+            max_age.ok_or_else(|| Error::InvalidHsts("Missing max-age directive".to_string()))?;
 
         if preload && !include_subdomains {
             return Err(Error::InvalidHsts(
@@ -207,8 +207,8 @@ mod tests {
         let hsts = StrictTransportSecurity::new(Duration::from_secs(31536000));
         assert_eq!(hsts.to_header_value().unwrap(), "max-age=31536000");
 
-        let hsts = StrictTransportSecurity::new(Duration::from_secs(31536000))
-            .include_subdomains(true);
+        let hsts =
+            StrictTransportSecurity::new(Duration::from_secs(31536000)).include_subdomains(true);
         assert_eq!(
             hsts.to_header_value().unwrap(),
             "max-age=31536000; includeSubDomains"
@@ -247,12 +247,11 @@ mod tests {
         assert!(!hsts.includes_subdomains());
         assert!(!hsts.is_preload());
 
-        let hsts =
-            StrictTransportSecurity::parse("max-age=31536000; includeSubDomains").unwrap();
+        let hsts = StrictTransportSecurity::parse("max-age=31536000; includeSubDomains").unwrap();
         assert!(hsts.includes_subdomains());
 
-        let hsts = StrictTransportSecurity::parse("max-age=31536000; includeSubDomains; preload")
-            .unwrap();
+        let hsts =
+            StrictTransportSecurity::parse("max-age=31536000; includeSubDomains; preload").unwrap();
         assert!(hsts.includes_subdomains());
         assert!(hsts.is_preload());
     }
@@ -272,8 +271,8 @@ mod tests {
 
     #[test]
     fn test_display() {
-        let hsts = StrictTransportSecurity::new(Duration::from_secs(31536000))
-            .include_subdomains(true);
+        let hsts =
+            StrictTransportSecurity::new(Duration::from_secs(31536000)).include_subdomains(true);
         assert_eq!(hsts.to_string(), "max-age=31536000; includeSubDomains");
     }
 }
