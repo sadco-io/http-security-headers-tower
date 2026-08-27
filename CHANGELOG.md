@@ -79,9 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.2.17, actix-web 4.15, futures-util 0.3.34, tracing 0.1.44, thiserror 2.0.20.
   Dev-dependencies: axum 0.8.9, http-body-util 0.1.5, bytes 1.12.1, hyper 1.11.
 - Lockfile refreshed; `time` 0.3.44 → 0.3.55 clears RUSTSEC-2026-0009.
-- Repository URL corrected to `danielrcurtis/http-security-headers-tower` in `Cargo.toml`,
-  the README badge and the changelog links. The crate remains published as
-  `http-security-headers`.
+- Repository moved to the `sadco-io` organisation and the URL corrected to
+  `sadco-io/http-security-headers-tower` in `Cargo.toml`, the README badge and the
+  changelog links. Through 0.2.0 these pointed at `danielrcurtis/http-security-headers`,
+  a repository that does not exist. GitHub redirects the old URLs. The crate remains
+  published as `http-security-headers`.
 
 ### Migration from 0.2
 
@@ -124,7 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation and examples
 - Feature flags for optional dependencies
 
-[Unreleased]: https://github.com/danielrcurtis/http-security-headers-tower/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/danielrcurtis/http-security-headers-tower/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/danielrcurtis/http-security-headers-tower/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/danielrcurtis/http-security-headers-tower/releases/tag/v0.1.0
+[Unreleased]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/sadco-io/http-security-headers-tower/releases/tag/v0.1.0

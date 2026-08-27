@@ -2,12 +2,12 @@
 
 [![Crates.io](https://img.shields.io/crates/v/http-security-headers.svg)](https://crates.io/crates/http-security-headers)
 [![Documentation](https://docs.rs/http-security-headers/badge.svg)](https://docs.rs/http-security-headers)
-[![License](https://img.shields.io/crates/l/http-security-headers.svg)](https://github.com/danielrcurtis/http-security-headers-tower)
+[![License](https://img.shields.io/crates/l/http-security-headers.svg)](https://github.com/sadco-io/http-security-headers-tower)
 
 Type-safe, framework-agnostic HTTP security headers for Rust with Tower and Actix-Web integration.
 
 > The crate is published as `http-security-headers`; the repository is
-> [`http-security-headers-tower`](https://github.com/danielrcurtis/http-security-headers-tower).
+> [`http-security-headers-tower`](https://github.com/sadco-io/http-security-headers-tower).
 
 ## Features
 
