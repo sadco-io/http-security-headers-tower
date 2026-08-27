@@ -5,6 +5,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur when working with security headers.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Invalid Content-Security-Policy directive.
     #[error("Invalid Content-Security-Policy: {0}")]

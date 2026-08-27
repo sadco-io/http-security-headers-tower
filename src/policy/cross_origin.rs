@@ -19,6 +19,7 @@ use crate::error::{Error, Result};
 /// let policy = CrossOriginOpenerPolicy::SameOriginAllowPopups;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CrossOriginOpenerPolicy {
     /// Isolates the browsing context exclusively to same-origin documents.
     SameOrigin,
@@ -78,6 +79,7 @@ impl std::fmt::Display for CrossOriginOpenerPolicy {
 /// let policy = CrossOriginEmbedderPolicy::UnsafeNone;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CrossOriginEmbedderPolicy {
     /// This is the default value and allows the document to fetch cross-origin resources
     /// without giving explicit permission through the CORS protocol or CORP header.
