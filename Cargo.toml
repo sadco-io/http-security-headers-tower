@@ -25,6 +25,13 @@ include = [
     "LICENSE-APACHE",
 ]
 
+# docs.rs builds with default features, and this crate's default set is empty --
+# so without this every optional module is absent from the rendered page. The
+# 0.2.0 docs prove it: .../http_security_headers/middleware/index.html is a 404
+# on a crate whose headline feature is Tower middleware.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 middleware = ["tower", "http", "http-body", "pin-project-lite"]
