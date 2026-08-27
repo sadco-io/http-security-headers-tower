@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-27
+
+### Changed
+- **`Error`, `CrossOriginOpenerPolicy` and `CrossOriginEmbedderPolicy` are now
+  `#[non_exhaustive]`.** Adding a variant to a public enum is a breaking change, and
+  these three are the ones that will grow: `Error` gains a variant whenever a header
+  type is added, and both cross-origin enums track specs that have already gained
+  values since this crate was written -- `credentialless` for COEP, and
+  `noopener-allow-popups` for COOP, which is still missing here and can now be added
+  without another break.
+
+  `XFrameOptions`, `ReferrerPolicy` and `CrossOriginResourcePolicy` are deliberately
+  left exhaustive. They are closed sets -- `X-Frame-Options` is shrinking rather than
+  growing, with `ALLOW-FROM` obsolete and `frame-ancestors` superseding it -- so the
+  cost of a wildcard arm buys nothing there.
+
+  Applying `#[non_exhaustive]` is itself breaking, while removing it is not, so it is
+  cheaper to decide now than after 1.0.
+
+### Migration from 0.4
+- If you `match` on `Error`, `CrossOriginOpenerPolicy` or `CrossOriginEmbedderPolicy`,
+  add a wildcard arm. Constructing them and passing them to the builder is unaffected,
+  which is how these types are used in practice.
+- No other API changed.
+
+
 ## [0.4.0] - 2026-08-27
 
 ### Added
@@ -160,7 +186,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation and examples
 - Feature flags for optional dependencies
 
-[Unreleased]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.1.0...v0.2.0
