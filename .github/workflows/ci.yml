@@ -9,11 +9,23 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Supersede in-flight runs on a PR branch rather than letting every push queue
+# another full matrix.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege by default; no job here needs to write anything.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: test (${{ matrix.rust }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +43,8 @@ jobs:
     name: feature powerset
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -46,6 +60,8 @@ jobs:
     name: msrv
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       # 1.85 covers the default build and every feature except `actix`.
@@ -62,6 +78,8 @@ jobs:
     name: fmt + clippy
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -71,20 +89,55 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-features --lib --tests --examples -- -D warnings
 
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # Broken intra-doc links are the failure mode here: this crate leans on
+      # them heavily and rustdoc does not fail on them by default.
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all-features
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: raven-actions/actionlint@v2
+        with:
+          fail-on-error: true
+
   unused-deps:
     name: unused dependencies
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-machete
+      # v0.2.0 shipped three features whose dependencies no code referenced.
+      # The powerset job above compiles every combination happily and would
+      # never have caught it; this is the job that does.
       - run: cargo machete
 
   package:
     name: package
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -97,6 +150,8 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
