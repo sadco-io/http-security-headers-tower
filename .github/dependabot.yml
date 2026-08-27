@@ -1,0 +1,30 @@
+version: 2
+
+updates:
+  # Group minor + patch bumps into a single PR per ecosystem. Ungrouped, a
+  # quiet week still produces several separate lockfile-only PRs.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 8
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        update-types: ["major", "minor", "patch"]
+    ignore:
+      # The msrv job pins dtolnay/rust-toolchain to an exact MSRV toolchain.
+      # Bumping the ref rewrites the MSRV floor and makes the job meaningless.
+      - dependency-name: "dtolnay/rust-toolchain"
+      # `@v2` is a floating major that already resolves past any patch
+      # Dependabot would pin us to; every other action here uses a floating
+      # major too.
+      - dependency-name: "taiki-e/install-action"

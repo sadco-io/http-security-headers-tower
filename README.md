@@ -2,17 +2,21 @@
 
 [![Crates.io](https://img.shields.io/crates/v/http-security-headers.svg)](https://crates.io/crates/http-security-headers)
 [![Documentation](https://docs.rs/http-security-headers/badge.svg)](https://docs.rs/http-security-headers)
-[![License](https://img.shields.io/crates/l/http-security-headers.svg)](https://github.com/danielrcurtis/http-security-headers)
+[![License](https://img.shields.io/crates/l/http-security-headers.svg)](https://github.com/danielrcurtis/http-security-headers-tower)
 
 Type-safe, framework-agnostic HTTP security headers for Rust with Tower and Actix-Web integration.
+
+> The crate is published as `http-security-headers`; the repository is
+> [`http-security-headers-tower`](https://github.com/danielrcurtis/http-security-headers-tower).
 
 ## Features
 
 - **🔒 Type-safe configuration**: Compile-time guarantees for header values
 - **🏗️ Builder pattern**: Ergonomic, fluent API for configuration
-- **📦 Preset configurations**: Strict, Balanced, and Relaxed security levels
+- **📦 Preset configurations**: Strict, Balanced and Relaxed security levels
 - **🔌 Framework integrations**: Tower middleware (Axum, Tonic, etc.) and Actix-Web support
-- **⚡ Minimal core deps**: Core crate only depends on `thiserror`; middleware feature adds Tower + pin-project-lite
+- **🎲 Per-request CSP nonces**: Drop `'unsafe-inline'` without rewriting your templates
+- **⚡ Rendered once**: Header values are built and validated at `build()` time, not per request
 - **📝 Well-documented**: Comprehensive docs with examples
 
 ## Security Headers Supported
@@ -24,33 +28,39 @@ Type-safe, framework-agnostic HTTP security headers for Rust with Tower and Acti
 | **X-Frame-Options** | Prevents clickjacking attacks |
 | **X-Content-Type-Options** | Prevents MIME type sniffing |
 | **Referrer-Policy** | Controls referrer information |
+| **Permissions-Policy** | Controls access to browser features and APIs |
 | **Cross-Origin-Opener-Policy (COOP)** | Isolates browsing contexts |
 | **Cross-Origin-Embedder-Policy (COEP)** | Controls cross-origin resource loading |
 | **Cross-Origin-Resource-Policy (CORP)** | Controls resource sharing |
 
 ## Installation
 
-Add to your `Cargo.toml`:
-
 Core only:
 
 ```toml
 [dependencies]
-http-security-headers = "0.2"
+http-security-headers = "0.3"
 ```
 
 With Tower/Axum middleware:
 
 ```toml
 [dependencies]
-http-security-headers = { version = "0.2", features = ["middleware"] }
+http-security-headers = { version = "0.3", features = ["middleware"] }
+```
+
+With per-request CSP nonces:
+
+```toml
+[dependencies]
+http-security-headers = { version = "0.3", features = ["middleware", "nonce"] }
 ```
 
 With Actix-Web integration:
 
 ```toml
 [dependencies]
-http-security-headers = { version = "0.2", features = ["actix"] }
+http-security-headers = { version = "0.3", features = ["actix"] }
 ```
 
 ## Quick Start
@@ -60,14 +70,13 @@ http-security-headers = { version = "0.2", features = ["actix"] }
 ```rust
 use http_security_headers::Preset;
 
-// Use a preset configuration
 let headers = Preset::Strict.build();
 ```
 
 ### Custom Configuration
 
 ```rust
-use http_security_headers::{SecurityHeaders, ContentSecurityPolicy};
+use http_security_headers::{ContentSecurityPolicy, PermissionsPolicy, SecurityHeaders};
 use std::time::Duration;
 
 let csp = ContentSecurityPolicy::new()
@@ -81,38 +90,40 @@ let headers = SecurityHeaders::builder()
     .x_frame_options_deny()
     .x_content_type_options_nosniff()
     .referrer_policy_no_referrer()
+    .permissions_policy(PermissionsPolicy::new().deny("camera").deny("microphone"))
     .build()
     .unwrap();
 ```
+
+Everything is rendered and validated inside `build()`. A policy that cannot become a
+legal HTTP header value is an error there, rather than a header that silently goes
+missing at request time.
 
 ### With Axum
 
 ```rust
 use axum::{Router, routing::get};
 use http_security_headers::{Preset, SecurityHeadersLayer};
-use std::sync::Arc;
-
-let headers = Arc::new(Preset::Strict.build());
 
 let app = Router::new()
     .route("/", get(|| async { "Hello, World!" }))
-    .layer(SecurityHeadersLayer::new(headers));
+    .layer(SecurityHeadersLayer::new(Preset::Strict.build()));
 ```
+
+`SecurityHeadersLayer::new` takes a `SecurityHeaders` or an `Arc<SecurityHeaders>`,
+so a configuration can be shared across several layers without cloning it.
 
 ### With Actix-Web
 
 ```rust
 use actix_web::{web, App, HttpResponse, HttpServer};
 use http_security_headers::{Preset, SecurityHeadersMiddleware};
-use std::sync::Arc;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let headers = Arc::new(Preset::Strict.build());
-
-    HttpServer::new(move || {
+    HttpServer::new(|| {
         App::new()
-            .wrap(SecurityHeadersMiddleware::new(headers.clone()))
+            .wrap(SecurityHeadersMiddleware::new(Preset::Strict.build()))
             .route("/", web::get().to(|| async { HttpResponse::Ok().body("Hello, World!") }))
     })
     .bind(("127.0.0.1", 3000))?
@@ -120,6 +131,47 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 ```
+
+## CSP Nonces
+
+`'unsafe-inline'` in `script-src` allows any inline `<script>` on the page — including
+one an attacker injected — which is the single thing CSP exists to stop. A nonce is the
+way out: the server emits an unpredictable value in both the CSP header and the `nonce`
+attribute of every script it trusts, so injected scripts do not run.
+
+Enable the `nonce` feature and mark the directives that should carry one. The middleware
+mints a fresh nonce per request, hands it to your handler through the request extensions,
+and writes the matching value into the header:
+
+```rust
+use axum::{Extension, Router, routing::get};
+use http_security_headers::{Nonce, Preset, SecurityHeadersLayer};
+
+async fn index(Extension(nonce): Extension<Nonce>) -> String {
+    format!("<script nonce=\"{nonce}\">console.log('hi')</script>")
+}
+
+let app = Router::new()
+    .route("/", get(index))
+    .layer(SecurityHeadersLayer::new(Preset::BalancedNonce.build()));
+```
+
+Under Actix-Web the nonce arrives as `web::ReqData<Nonce>`.
+
+To add a nonce to a hand-built policy, use `with_nonce()` (which covers `script-src` and
+`style-src`) or `nonce_for([...])` for specific directives:
+
+```rust
+use http_security_headers::ContentSecurityPolicy;
+
+let csp = ContentSecurityPolicy::new()
+    .default_src(vec!["'self'"])
+    .script_src(vec!["'self'"])
+    .nonce_for(["script-src"]);
+```
+
+A configuration that asks for a nonce while the `nonce` feature is off panics when the
+layer is constructed, rather than quietly serving a policy without one.
 
 ## Presets
 
@@ -132,30 +184,45 @@ let headers = Preset::Strict.build();
 ```
 
 **Includes:**
-- CSP: `default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`
+- CSP: `base-uri 'self'; default-src 'self'; frame-ancestors 'none'; object-src 'none'`
 - HSTS: 1 year, includeSubDomains
 - X-Frame-Options: DENY
 - X-Content-Type-Options: nosniff
 - Referrer-Policy: no-referrer
+- Permissions-Policy: `camera`, `geolocation`, `microphone`, `payment` and `usb` denied
 - COOP: same-origin
 - COEP: require-corp
 - CORP: same-origin
 
 ### Balanced
 
-Provides good security while maintaining compatibility.
+Good compatibility, and **not an XSS control** — see the warning below.
 
 ```rust
 let headers = Preset::Balanced.build();
 ```
 
 **Includes:**
-- CSP: `default-src 'self'; script-src 'self' 'unsafe-inline'; object-src 'none'`
+- CSP: `default-src 'self'; object-src 'none'; script-src 'self' 'unsafe-inline'`
 - HSTS: 1 year, includeSubDomains
 - X-Frame-Options: SAMEORIGIN
 - X-Content-Type-Options: nosniff
 - Referrer-Policy: strict-origin-when-cross-origin
+- Permissions-Policy: `camera`, `geolocation` and `microphone` denied
 - COOP: same-origin-allow-popups
+
+> ⚠️ `Balanced` carries `'unsafe-inline'` in `script-src`, which permits any inline
+> script on the page. Treat its CSP as defence in depth for resource loading, not as
+> protection against XSS. Use `BalancedNonce` when your templates can carry a nonce.
+
+### BalancedNonce
+
+`Balanced`, with a per-request nonce instead of `'unsafe-inline'`. Identical in every
+other respect. Requires the `nonce` feature.
+
+```rust
+let headers = Preset::BalancedNonce.build();
+```
 
 ### Relaxed
 
@@ -175,15 +242,16 @@ let headers = Preset::Relaxed.build();
 
 Check out the [examples](examples/) directory:
 
-- **[axum_basic.rs](examples/axum_basic.rs)**: Basic Axum integration with preset
+- **[axum_basic.rs](examples/axum_basic.rs)**: Basic Axum integration with a preset
 - **[axum_custom.rs](examples/axum_custom.rs)**: Custom security headers configuration
+- **[axum_nonce.rs](examples/axum_nonce.rs)**: Per-request CSP nonces, with a page that
+  demonstrates a nonced script running and an un-nonced one being blocked
 - **[actix_basic.rs](examples/actix_basic.rs)**: Simple Actix-Web integration
 
-Run examples:
-
 ```bash
-cargo run --example axum_basic --features middleware
+cargo run --example axum_basic  --features middleware
 cargo run --example axum_custom --features middleware
+cargo run --example axum_nonce  --features middleware,nonce
 cargo run --example actix_basic --features actix
 ```
 
@@ -191,16 +259,31 @@ cargo run --example actix_basic --features actix
 
 | Feature | Description |
 |---------|-------------|
-| `middleware` | Enables Tower middleware support |
-| `axum` | Enables Axum-specific helpers (requires `middleware`) |
-| `actix` | Enables Actix-Web middleware integration (includes `actix-web`) |
-| `observability` | Enables tracing support |
-| `metrics` | Enables metrics collection |
-| `validation` | Enables CSP/Permissions-Policy validation |
+| `middleware` | Tower `Layer`/`Service` for any Tower-based framework |
+| `actix` | Actix-Web middleware (implies `middleware`) |
+| `nonce` | Per-request CSP nonce generation (adds `getrandom`) |
+| `observability` | `tracing` events in the middleware |
 
-## Documentation
+## Minimum Supported Rust Version
 
-Full documentation is available on [docs.rs](https://docs.rs/http-security-headers).
+**1.85** for the default build and for `middleware`, `nonce` and `observability`.
+
+**1.88** for the `actix` feature — actix-web, actix-http and actix-server all declare
+`rust-version = "1.88"`. Both floors are enforced by separate CI jobs.
+
+The MSRV is treated as part of the public API: it is raised only in a minor release.
+
+## A note on the `actix` feature and `h2`
+
+`actix-web` is depended on with `default-features = false`, because a header middleware
+needs none of HTTP/2, compression or cookie handling. That also keeps `h2` 0.3 out of the
+tree — its newest release (0.3.27) still carries
+[GHSA-q83h-524g-xf6h](https://github.com/hyperium/hyper/security/advisories/GHSA-q83h-524g-xf6h),
+and the fix exists only in the 0.4 line, which actix-http 3.x cannot use.
+
+This is not a fix for your application: if you enable actix-web's `http2` yourself, Cargo
+unions the features and `h2` 0.3 comes back. It means only that this crate is not the
+reason it is there.
 
 ## Comparison with Other Crates
 
@@ -211,11 +294,21 @@ Full documentation is available on [docs.rs](https://docs.rs/http-security-heade
 | Preset configurations | ✅ | ❌ | ❌ |
 | Framework-agnostic | ✅ | ❌ | ✅ |
 | CSP builder | ✅ | ❌ | ❌ |
+| Per-request CSP nonces | ✅ | ❌ | ❌ |
 | Full header support | ✅ | Partial | Partial |
+
+## Documentation
+
+Full documentation is available on [docs.rs](https://docs.rs/http-security-headers).
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+Before opening one, `cargo fmt --all`, `cargo clippy --all-features --lib --tests
+--examples -- -D warnings` and `cargo test --all-features` should all be clean; CI runs
+the same checks plus a feature powerset build, both MSRV floors, `cargo deny` and an
+unused-dependency scan.
 
 ## License
 
