@@ -1,10 +1,10 @@
 [package]
 name = "http-security-headers"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 # 1.85 is the floor for the default build and for `middleware`, `nonce` and
-# `observability`. The `actix` feature additionally requires 1.88 -- actix-web,
-# actix-http and actix-server all declare rust-version = "1.88". Both floors are
+# `observability`. The `actix` feature additionally requires 1.89 -- actix-web,
+# actix-http and actix-server all declare rust-version = "1.89". Both floors are
 # enforced by separate CI jobs. The 1.75 declared through 0.2.0 was never buildable.
 rust-version = "1.85"
 authors = ["Daniel Curtis <drc@danielryancurtis.com>"]
@@ -41,7 +41,7 @@ observability = ["tracing"]
 
 [dependencies]
 # Error handling
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 
 # Optional: Tower middleware
 tower = { version = "0.5.3", optional = true }
@@ -57,7 +57,7 @@ pin-project-lite = { version = "0.2.17", optional = true }
 # (0.3.27) still carries GHSA-q83h-524g-xf6h -- the fix landed only in the 0.4
 # line, which actix-http 3.x cannot use. An application that enables actix-web's
 # `http2` itself still resolves h2 0.3; we simply stop being the reason.
-actix-web = { version = "4.15", default-features = false, features = [
+actix-web = { version = "4.19", default-features = false, features = [
     "macros",
 ], optional = true }
 futures-util = { version = "0.3.34", optional = true }
@@ -70,13 +70,13 @@ getrandom = { version = "0.4.3", optional = true }
 tracing = { version = "0.1.44", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.53", features = ["full", "test-util"] }
+tokio = { version = "1.54.1", features = ["full", "test-util"] }
 axum = "0.8.9"
 tower = "0.5.3"
 http = "1.5.0"
 http-body-util = "0.1.5"
 bytes = "1.12.1"
-hyper = { version = "1.11", features = ["full"] }
+hyper = { version = "1.12", features = ["full"] }
 
 [[test]]
 name = "middleware_axum"

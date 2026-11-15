@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-14
+
+### Security
+- **`actix-web` `4.15` → `4.19`** (`actix-http` `3.13.3` → `3.21.0` in `Cargo.lock`),
+  clearing **RUSTSEC-2026-0446** (HTTP/1 chunked trailer request smuggling, `#15`),
+  **RUSTSEC-2026-0447** (extractor size limits on compressed bodies, `#16`),
+  **RUSTSEC-2026-0448** (unbounded `Decoder` decompression, `#14`), and
+  **RUSTSEC-2026-0455** (large-window Brotli buffer allocation, `#13`).
+  This crate already depends on `actix-web` with `default-features = false` (enabling
+  none of the compression features three of those advisories require); raising the
+  version floor ensures downstream `actix` users cannot resolve the unpatched
+  releases through this crate.
+- **`tokio` `1.53.1` → `1.54.1`** in `[dev-dependencies]` and `Cargo.lock`,
+  clearing **RUSTSEC-2026-0386** (`AsyncFd::new` I/O safety, `#11`) in this
+  repository's lockfile and CI. `http-security-headers` does not depend on `tokio`
+  directly at runtime — under `actix`, `tokio` enters transitively through
+  `actix-server` (`^1.51`), so downstream `actix` applications with existing
+  lockfiles should also ensure their own resolved `tokio` is `>= 1.51.6` (on
+  `1.51.x`) or `>= 1.53.3`.
+
+### Added
+- **Trusted Types CSP directives** (`#12`):
+  `ContentSecurityPolicy::require_trusted_types_for`,
+  `ContentSecurityPolicy::require_trusted_types_for_script`, and
+  `ContentSecurityPolicy::trusted_types`. `require-trusted-types-for` validates at
+  render (`to_header_value()` / `SecurityHeadersBuilder::build()`) and `parse()` time
+  that at least one single-quoted sink group (such as `'script'`) is supplied and no
+  nonce is attached, turning a misquoted `"script"` (which browsers silently ignore)
+  into a startup error.
+
+### Changed
+- **`actix` feature MSRV raised from 1.88 to 1.89.** `actix-web` 4.18+,
+  `actix-http` 3.20+, and `actix-server` 2.10 all declare `rust-version = "1.89"`.
+  The MSRV for the default build and for `middleware`, `nonce`, and `observability`
+  remains **1.85**.
+- Dependency updates: `actix-web` `4.19`, `thiserror` `2.0.21`; dev-dependencies
+  `tokio` `1.54.1`, `hyper` `1.12` (superseding `#10`).
+
 ## [0.5.0] - 2026-08-27
 
 ### Changed
@@ -186,7 +224,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation and examples
 - Feature flags for optional dependencies
 
-[Unreleased]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sadco-io/http-security-headers-tower/compare/v0.2.0...v0.3.0

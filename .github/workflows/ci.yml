@@ -70,8 +70,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build
       - run: cargo build --features middleware,nonce,observability
-      # actix-web, actix-http and actix-server all declare rust-version 1.88.
-      - uses: dtolnay/rust-toolchain@1.88.0
+      # actix-web, actix-http and actix-server all declare rust-version 1.89.
+      - uses: dtolnay/rust-toolchain@1.89.0
       - run: cargo build --all-features
 
   lint:
