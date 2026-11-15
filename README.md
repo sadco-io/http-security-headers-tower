@@ -39,28 +39,28 @@ Core only:
 
 ```toml
 [dependencies]
-http-security-headers = "0.5"
+http-security-headers = "0.6"
 ```
 
 With Tower/Axum middleware:
 
 ```toml
 [dependencies]
-http-security-headers = { version = "0.5", features = ["middleware"] }
+http-security-headers = { version = "0.6", features = ["middleware"] }
 ```
 
 With per-request CSP nonces:
 
 ```toml
 [dependencies]
-http-security-headers = { version = "0.5", features = ["middleware", "nonce"] }
+http-security-headers = { version = "0.6", features = ["middleware", "nonce"] }
 ```
 
 With Actix-Web integration:
 
 ```toml
 [dependencies]
-http-security-headers = { version = "0.5", features = ["actix"] }
+http-security-headers = { version = "0.6", features = ["actix"] }
 ```
 
 ## Quick Start
@@ -311,8 +311,8 @@ cargo run --example actix_basic --features actix
 
 **1.85** for the default build and for `middleware`, `nonce` and `observability`.
 
-**1.88** for the `actix` feature — actix-web, actix-http and actix-server all declare
-`rust-version = "1.88"`. Both floors are enforced by separate CI jobs.
+**1.89** for the `actix` feature — actix-web, actix-http and actix-server all declare
+`rust-version = "1.89"`. Both floors are enforced by separate CI jobs.
 
 The MSRV is treated as part of the public API: it is raised only in a minor release.
 

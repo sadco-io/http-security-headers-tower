@@ -227,6 +227,90 @@ impl ContentSecurityPolicy {
         self
     }
 
+    /// Sets the `require-trusted-types-for` directive.
+    ///
+    /// Enforces Trusted Types for the specified DOM XSS sink groups. Currently
+    /// `'script'` is the only standardized sink group and must be single-quoted;
+    /// see [`Self::require_trusted_types_for_script`] for a zero-argument
+    /// shorthand that avoids quoting mistakes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use http_security_headers::ContentSecurityPolicy;
+    ///
+    /// let csp = ContentSecurityPolicy::new()
+    ///     .require_trusted_types_for(["'script'"]);
+    ///
+    /// assert_eq!(
+    ///     csp.to_header_value().unwrap(),
+    ///     "require-trusted-types-for 'script'"
+    /// );
+    /// ```
+    pub fn require_trusted_types_for<I, S>(mut self, sink_groups: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.set_directive("require-trusted-types-for", sink_groups);
+        self
+    }
+
+    /// Sets `require-trusted-types-for 'script'`.
+    ///
+    /// Convenience shorthand for `require_trusted_types_for(["'script'"])`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use http_security_headers::ContentSecurityPolicy;
+    ///
+    /// let csp = ContentSecurityPolicy::new()
+    ///     .default_src(["'self'"])
+    ///     .require_trusted_types_for_script();
+    ///
+    /// assert_eq!(
+    ///     csp.to_header_value().unwrap(),
+    ///     "default-src 'self'; require-trusted-types-for 'script'"
+    /// );
+    /// ```
+    pub fn require_trusted_types_for_script(self) -> Self {
+        self.require_trusted_types_for(["'script'"])
+    }
+
+    /// Sets the `trusted-types` directive.
+    ///
+    /// Restricts which Trusted Types policy names may be created (for example,
+    /// `["default", "dompurify"]`, `["my-policy", "'allow-duplicates'"]`, or
+    /// `["'none'"]`). An empty list is also valid per the Trusted Types
+    /// specification and disallows creating any policies.
+    ///
+    /// Special keywords (`'none'` and `'allow-duplicates'`) must be single-quoted;
+    /// without quotes, browsers treat them as literal policy names.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use http_security_headers::ContentSecurityPolicy;
+    ///
+    /// let csp = ContentSecurityPolicy::new()
+    ///     .require_trusted_types_for_script()
+    ///     .trusted_types(["default", "dompurify"]);
+    ///
+    /// assert_eq!(
+    ///     csp.to_header_value().unwrap(),
+    ///     "require-trusted-types-for 'script'; trusted-types default dompurify"
+    /// );
+    /// ```
+    pub fn trusted_types<I, S>(mut self, policies: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.set_directive("trusted-types", policies);
+        self
+    }
+
     /// Sets a custom directive.
     ///
     /// This allows setting directives not covered by the convenience methods.
@@ -319,8 +403,13 @@ impl ContentSecurityPolicy {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidCsp`] if the policy is empty, or if a directive name
-    /// or source contains a character that cannot appear in an HTTP header value.
+    /// Returns [`Error::InvalidCsp`] if:
+    /// - the policy is empty,
+    /// - a directive name or source contains a character that cannot appear in an
+    ///   HTTP header value, or
+    /// - `require-trusted-types-for` has an empty sink-group list, contains an
+    ///   unquoted or malformed sink group, or is registered for a nonce via
+    ///   [`nonce_for`](Self::nonce_for).
     ///
     /// If the policy [requires a nonce](Self::requires_nonce), the nonce directives
     /// are rendered without one -- use [`to_header_value_with_nonce`] instead.
@@ -332,6 +421,11 @@ impl ContentSecurityPolicy {
 
     /// Converts the policy to its header value string, injecting `nonce` into every
     /// directive registered with [`nonce_for`](Self::nonce_for).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidCsp`] under the same conditions as
+    /// [`to_header_value`](Self::to_header_value).
     ///
     /// # Examples
     ///
@@ -367,6 +461,18 @@ impl ContentSecurityPolicy {
                 validate_token(source, "source")?;
                 rendered.push(source);
             }
+            validate_directive_values(directive, sources)?;
+
+            if directive.eq_ignore_ascii_case("require-trusted-types-for")
+                && self
+                    .nonce_directives
+                    .iter()
+                    .any(|d| d.eq_ignore_ascii_case("require-trusted-types-for"))
+            {
+                return Err(Error::InvalidCsp(
+                    "CSP directive 'require-trusted-types-for' does not accept nonces".to_string(),
+                ));
+            }
 
             let nonce_source;
             if let Some(nonce) = nonce {
@@ -388,6 +494,13 @@ impl ContentSecurityPolicy {
     }
 
     /// Parses a CSP policy from a header value string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidCsp`] if no directives are found, if a directive
+    /// name or source contains an illegal character, or if
+    /// `require-trusted-types-for` has an empty sink-group list or an unquoted or
+    /// malformed sink group.
     ///
     /// # Examples
     ///
@@ -416,6 +529,7 @@ impl ContentSecurityPolicy {
                 validate_token(source, "source")?;
                 sources.push(source.to_string());
             }
+            validate_directive_values(directive_name, &sources)?;
 
             csp.directives.insert(directive_name.to_string(), sources);
         }
@@ -449,6 +563,40 @@ fn validate_token(token: &str, kind: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Validates directive-specific value rules in both `render()` and `parse()`.
+fn validate_directive_values(directive: &str, sources: &[String]) -> Result<()> {
+    if directive.eq_ignore_ascii_case("require-trusted-types-for") {
+        if sources.is_empty() {
+            return Err(Error::InvalidCsp(
+                "CSP directive 'require-trusted-types-for' requires at least one sink group (for example, \"'script'\")"
+                    .to_string(),
+            ));
+        }
+
+        for source in sources {
+            if !is_valid_sink_group_keyword(source) {
+                return Err(Error::InvalidCsp(format!(
+                    "CSP directive 'require-trusted-types-for' sink group '{}' must be a single-quoted keyword such as \"'script'\"",
+                    source.escape_debug()
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn is_valid_sink_group_keyword(source: &str) -> bool {
+    let Some(inner) = source.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) else {
+        return false;
+    };
+
+    !inner.is_empty()
+        && inner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 impl std::fmt::Display for ContentSecurityPolicy {
@@ -643,5 +791,186 @@ mod tests {
     fn test_display() {
         let csp = ContentSecurityPolicy::new().default_src(vec!["'self'"]);
         assert_eq!(csp.to_string(), "default-src 'self'");
+    }
+
+    #[test]
+    fn test_require_trusted_types_for_and_script_shorthand() {
+        let explicit = ContentSecurityPolicy::new().require_trusted_types_for(["'script'"]);
+        let shorthand = ContentSecurityPolicy::new().require_trusted_types_for_script();
+
+        assert_eq!(
+            explicit.to_header_value().unwrap(),
+            "require-trusted-types-for 'script'"
+        );
+        assert_eq!(
+            shorthand.to_header_value().unwrap(),
+            "require-trusted-types-for 'script'"
+        );
+    }
+
+    #[test]
+    fn test_trusted_types_composes_alphabetically_with_nonces_and_headers() {
+        let csp = ContentSecurityPolicy::new()
+            .script_src(["'self'"])
+            .trusted_types(["default", "dompurify", "'allow-duplicates'"])
+            .require_trusted_types_for_script()
+            .default_src(["'self'"])
+            .nonce_for(["script-src"]);
+
+        let nonce = Nonce::from_encoded("dGVzdA==").unwrap();
+        assert_eq!(
+            csp.to_header_value_with_nonce(&nonce).unwrap(),
+            "default-src 'self'; require-trusted-types-for 'script'; script-src 'self' 'nonce-dGVzdA=='; trusted-types default dompurify 'allow-duplicates'"
+        );
+
+        let none_policy = ContentSecurityPolicy::new()
+            .require_trusted_types_for_script()
+            .trusted_types(["'none'"]);
+        assert_eq!(
+            none_policy.to_header_value().unwrap(),
+            "require-trusted-types-for 'script'; trusted-types 'none'"
+        );
+
+        let empty_policy = ContentSecurityPolicy::new().trusted_types(Vec::<&str>::new());
+        assert_eq!(empty_policy.to_header_value().unwrap(), "trusted-types");
+
+        let headers = crate::SecurityHeaders::builder()
+            .content_security_policy(
+                ContentSecurityPolicy::new()
+                    .default_src(["'self'"])
+                    .require_trusted_types_for_script(),
+            )
+            .content_security_policy_report_only(
+                ContentSecurityPolicy::new()
+                    .require_trusted_types_for_script()
+                    .trusted_types(["default"]),
+            )
+            .build()
+            .unwrap();
+
+        let pairs = headers.header_pairs();
+        assert!(pairs.contains(&(
+            "content-security-policy",
+            "default-src 'self'; require-trusted-types-for 'script'".to_string()
+        )));
+        assert!(pairs.contains(&(
+            "content-security-policy-report-only",
+            "require-trusted-types-for 'script'; trusted-types default".to_string()
+        )));
+    }
+
+    #[test]
+    fn test_require_trusted_types_for_validation_rejects_invalid_values() {
+        assert!(ContentSecurityPolicy::new()
+            .require_trusted_types_for(Vec::<&str>::new())
+            .to_header_value()
+            .is_err());
+
+        for name in [
+            "require-trusted-types-for",
+            "Require-Trusted-Types-For",
+            "REQUIRE-TRUSTED-TYPES-FOR",
+        ] {
+            assert!(
+                ContentSecurityPolicy::new()
+                    .directive(name, Vec::<&str>::new())
+                    .to_header_value()
+                    .is_err(),
+                "expected empty {name:?} to be rejected"
+            );
+            assert!(
+                ContentSecurityPolicy::new()
+                    .directive(name, ["script"])
+                    .to_header_value()
+                    .is_err(),
+                "expected unquoted {name:?} to be rejected"
+            );
+            assert_eq!(
+                ContentSecurityPolicy::new()
+                    .directive(name, ["'script'"])
+                    .to_header_value()
+                    .unwrap(),
+                format!("{name} 'script'")
+            );
+        }
+
+        for bad in [
+            "script",
+            "''",
+            "'",
+            "'script",
+            "script'",
+            "'scr'ipt'",
+            "' '",
+            "'script' 'foo'",
+            "'<script>'",
+            "'script/foo'",
+            "'\"script\"'",
+            "'(script)'",
+        ] {
+            assert!(
+                ContentSecurityPolicy::new()
+                    .require_trusted_types_for([bad])
+                    .to_header_value()
+                    .is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+
+        assert!(ContentSecurityPolicy::new()
+            .require_trusted_types_for_script()
+            .nonce_for(["require-trusted-types-for"])
+            .to_header_value()
+            .is_err());
+        assert!(ContentSecurityPolicy::new()
+            .directive("Require-Trusted-Types-For", ["'script'"])
+            .nonce_for(["Require-Trusted-Types-For"])
+            .to_header_value()
+            .is_err());
+    }
+
+    #[test]
+    fn test_require_trusted_types_for_parse_validation_and_roundtrip() {
+        for raw in [
+            "require-trusted-types-for",
+            "Require-Trusted-Types-For",
+            "REQUIRE-TRUSTED-TYPES-FOR",
+            "require-trusted-types-for script",
+            "Require-Trusted-Types-For script",
+            "REQUIRE-TRUSTED-TYPES-FOR script",
+            "require-trusted-types-for ''",
+            "Require-Trusted-Types-For '<script>'",
+        ] {
+            assert!(
+                ContentSecurityPolicy::parse(raw).is_err(),
+                "expected parse({raw:?}) to fail"
+            );
+        }
+
+        let parsed_upper =
+            ContentSecurityPolicy::parse("Require-Trusted-Types-For 'script'").unwrap();
+        assert_eq!(
+            parsed_upper.to_header_value().unwrap(),
+            "Require-Trusted-Types-For 'script'"
+        );
+
+        let parsed_all_caps =
+            ContentSecurityPolicy::parse("REQUIRE-TRUSTED-TYPES-FOR 'script'").unwrap();
+        assert_eq!(
+            parsed_all_caps.to_header_value().unwrap(),
+            "REQUIRE-TRUSTED-TYPES-FOR 'script'"
+        );
+
+        let parsed = ContentSecurityPolicy::parse(
+            "default-src 'self'; require-trusted-types-for 'script'; trusted-types dompurify",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.to_header_value().unwrap(),
+            "default-src 'self'; require-trusted-types-for 'script'; trusted-types dompurify"
+        );
+
+        let parsed_empty_tt = ContentSecurityPolicy::parse("trusted-types").unwrap();
+        assert_eq!(parsed_empty_tt.to_header_value().unwrap(), "trusted-types");
     }
 }
